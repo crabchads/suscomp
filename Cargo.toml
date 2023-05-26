@@ -1,0 +1,10 @@
+[package]
+name = "suscomp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.71"
+ash = { git = "https://github.com/ash-rs/ash", version = "0.37.0" }
+tracing = "0.1.37"
+tracing-subscriber = "0.3.17"
