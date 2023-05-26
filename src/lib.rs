@@ -66,7 +66,9 @@ pub fn find_memorytype_index(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn record_submit_commandbuffer<F: FnOnce(&Device, vk::CommandBuffer)>(
+pub fn record_submit_commandbuffer<
+	F: FnOnce(&Device, vk::CommandBuffer) -> Result<()>,
+>(
 	device: &Device,
 	command_buffer: vk::CommandBuffer,
 	command_buffer_reuse_fence: vk::Fence,
@@ -95,7 +97,7 @@ pub fn record_submit_commandbuffer<F: FnOnce(&Device, vk::CommandBuffer)>(
 
 		device
 			.begin_command_buffer(command_buffer, &command_buffer_begin_info)?;
-		f(device, command_buffer);
+		f(device, command_buffer)?;
 		device.end_command_buffer(command_buffer)?;
 
 		let command_buffers = vec![command_buffer];
@@ -115,3 +117,13 @@ pub fn record_submit_commandbuffer<F: FnOnce(&Device, vk::CommandBuffer)>(
 
 	Ok(())
 }
+
+#[derive(Clone, Debug, Copy)]
+pub struct Vertex {
+	pub position: [f32; 4],
+	pub color: [f32; 4],
+}
+
+pub mod buffer;
+pub mod context;
+pub mod model;

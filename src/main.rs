@@ -1,31 +1,23 @@
 #![feature(offset_of)]
 
-use std::{
-	ffi::CStr,
-	io::Cursor,
-	mem::{align_of, offset_of},
-};
+use std::{ffi::CStr, io::Cursor, mem::offset_of};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Ok, Result};
 use ash::{
 	extensions::{
 		ext::DebugUtils,
 		khr::{Display, Surface, Swapchain},
 	},
-	util::{read_spv, Align},
-	vk::{self, ImageView},
+	util::read_spv,
+	vk::{self, BufferUsageFlags, ImageView},
 	Device, Entry, Instance,
 };
 use suscomp::{
+	context::{DrawContext, HardwareContext},
 	find_memorytype_index, get_surfaces_for_displays,
-	record_submit_commandbuffer,
+	model::Model,
+	record_submit_commandbuffer, Vertex,
 };
-
-#[derive(Clone, Debug, Copy)]
-struct Vertex {
-	pos: [f32; 4],
-	color: [f32; 4],
-}
 
 fn main() -> Result<()> {
 	unsafe {
@@ -218,8 +210,14 @@ fn main() -> Result<()> {
 				Ok(device.create_image_view(&create_view_info, None)?)
 			})
 			.collect::<Result<Vec<ImageView>>>()?;
-		let device_memory_properties =
-			instance.get_physical_device_memory_properties(physical_device);
+
+		let hardware_context = HardwareContext {
+			device: &device,
+			physical_device: &physical_device,
+			device_memory_properties: instance
+				.get_physical_device_memory_properties(physical_device),
+		};
+
 		let depth_image_create_info = vk::ImageCreateInfo::default()
 			.image_type(vk::ImageType::TYPE_2D)
 			.format(vk::Format::D16_UNORM)
@@ -237,7 +235,7 @@ fn main() -> Result<()> {
 			device.get_image_memory_requirements(depth_image);
 		let depth_image_memory_index = find_memorytype_index(
 			&depth_image_memory_req,
-			&device_memory_properties,
+			&hardware_context.device_memory_properties,
 			vk::MemoryPropertyFlags::DEVICE_LOCAL,
 		)
 		.context("Unable to find suitable memory index for depth image.")?;
@@ -296,6 +294,8 @@ fn main() -> Result<()> {
 					&[],
 					&[layout_transition_barriers],
 				);
+
+				Ok(())
 			},
 		)?;
 
@@ -387,132 +387,70 @@ fn main() -> Result<()> {
 					.unwrap()
 			})
 			.collect();
-
-		let index_buffer_data = [0u32, 1, 2];
-		let index_buffer_info = vk::BufferCreateInfo::default()
-			.size(std::mem::size_of_val(&index_buffer_data) as u64)
-			.usage(vk::BufferUsageFlags::INDEX_BUFFER)
-			.sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-		let index_buffer = device.create_buffer(&index_buffer_info, None)?;
-		let index_buffer_memory_req =
-			device.get_buffer_memory_requirements(index_buffer);
-		let index_buffer_memory_index = find_memorytype_index(
-			&index_buffer_memory_req,
-			&device_memory_properties,
-			vk::MemoryPropertyFlags::HOST_VISIBLE
-				| vk::MemoryPropertyFlags::HOST_COHERENT,
-		)
-		.expect("Unable to find suitable memorytype for the index buffer.");
-
-		let index_allocate_info = vk::MemoryAllocateInfo {
-			allocation_size: index_buffer_memory_req.size,
-			memory_type_index: index_buffer_memory_index,
-			..Default::default()
-		};
-		let index_buffer_memory =
-			device.allocate_memory(&index_allocate_info, None)?;
-		let index_ptr = device.map_memory(
-			index_buffer_memory,
-			0,
-			index_buffer_memory_req.size,
-			vk::MemoryMapFlags::empty(),
+		let index_buffer_data = &[0u32, 1, 2];
+		let index_buffer = suscomp::buffer::Buffer::new(
+			&hardware_context,
+			BufferUsageFlags::INDEX_BUFFER,
+			std::mem::size_of_val(index_buffer_data) as u64,
 		)?;
-		let mut index_slice = Align::new(
-			index_ptr,
-			align_of::<u32>() as u64,
-			index_buffer_memory_req.size,
-		);
-		index_slice.copy_from_slice(&index_buffer_data);
-		device.unmap_memory(index_buffer_memory);
-		device.bind_buffer_memory(index_buffer, index_buffer_memory, 0)?;
-
-		let vertex_input_buffer_info = vk::BufferCreateInfo {
-			size: 3 * std::mem::size_of::<Vertex>() as u64,
-			usage: vk::BufferUsageFlags::VERTEX_BUFFER,
-			sharing_mode: vk::SharingMode::EXCLUSIVE,
-			..Default::default()
-		};
-
-		let vertex_input_buffer =
-			device.create_buffer(&vertex_input_buffer_info, None)?;
-
-		let vertex_input_buffer_memory_req =
-			device.get_buffer_memory_requirements(vertex_input_buffer);
-
-		let vertex_input_buffer_memory_index = find_memorytype_index(
-			&vertex_input_buffer_memory_req,
-			&device_memory_properties,
-			vk::MemoryPropertyFlags::HOST_VISIBLE
-				| vk::MemoryPropertyFlags::HOST_COHERENT,
-		)
-		.expect("Unable to find suitable memorytype for the vertex buffer.");
-
-		let vertex_buffer_allocate_info = vk::MemoryAllocateInfo {
-			allocation_size: vertex_input_buffer_memory_req.size,
-			memory_type_index: vertex_input_buffer_memory_index,
-			..Default::default()
-		};
-
-		let vertex_input_buffer_memory =
-			device.allocate_memory(&vertex_buffer_allocate_info, None)?;
-
-		let vertices = [
-			Vertex {
-				pos: [-1.0, 1.0, 0.0, 1.0],
-				color: [0.0, 1.0, 0.0, 1.0],
-			},
-			Vertex {
-				pos: [1.0, 1.0, 0.0, 1.0],
-				color: [0.0, 0.0, 1.0, 1.0],
-			},
-			Vertex {
-				pos: [0.0, -1.0, 0.0, 1.0],
-				color: [1.0, 0.0, 0.0, 1.0],
-			},
-		];
-
-		let vert_ptr = device.map_memory(
-			vertex_input_buffer_memory,
-			0,
-			vertex_input_buffer_memory_req.size,
-			vk::MemoryMapFlags::empty(),
+		index_buffer.bind_data(
+			&hardware_context,
+			index_buffer_data,
+			std::mem::align_of::<u32>() as u64,
 		)?;
 
-		let mut vert_align = Align::new(
-			vert_ptr,
-			align_of::<Vertex>() as u64,
-			vertex_input_buffer_memory_req.size,
-		);
-		vert_align.copy_from_slice(&vertices);
-		device.unmap_memory(vertex_input_buffer_memory);
-		device.bind_buffer_memory(
-			vertex_input_buffer,
-			vertex_input_buffer_memory,
-			0,
+		let vertex_buffer = suscomp::buffer::Buffer::new(
+			&hardware_context,
+			BufferUsageFlags::VERTEX_BUFFER,
+			3 * std::mem::size_of::<Vertex>() as u64,
 		)?;
-		let mut vertex_spv_file =
+		vertex_buffer.bind_data(
+			&hardware_context,
+			&[
+				Vertex {
+					position: [-1.0, 1.0, 0.0, 1.0],
+					color: [0.0, 1.0, 0.0, 1.0],
+				},
+				Vertex {
+					position: [1.0, 1.0, 0.0, 1.0],
+					color: [0.0, 0.0, 1.0, 1.0],
+				},
+				Vertex {
+					position: [0.0, -1.0, 0.0, 1.0],
+					color: [1.0, 0.0, 0.0, 1.0],
+				},
+			],
+			std::mem::align_of::<Vertex>() as u64,
+		)?;
+
+		let model = Model {
+			vertex_buffer,
+			index_buffer,
+			index_data_len: 3,
+		};
+
+		let mut vertex_shader_file =
 			Cursor::new(&include_bytes!("../shader/triangle.vert.spv")[..]);
-		let mut frag_spv_file =
+		let mut frag_shader_file =
 			Cursor::new(&include_bytes!("../shader/triangle.frag.spv")[..]);
 
-		let vertex_code = read_spv(&mut vertex_spv_file)
+		let vertex_shader_code = read_spv(&mut vertex_shader_file)
 			.expect("Failed to read vertex shader spv file");
 		let vertex_shader_info =
-			vk::ShaderModuleCreateInfo::default().code(&vertex_code);
+			vk::ShaderModuleCreateInfo::default().code(&vertex_shader_code);
 
-		let frag_code = read_spv(&mut frag_spv_file)
-			.expect("Failed to read fragment shader spv file");
+		let frag_code = read_spv(&mut frag_shader_file)
+			.context("Failed to read fragment shader spv file")?;
 		let frag_shader_info =
 			vk::ShaderModuleCreateInfo::default().code(&frag_code);
 
 		let vertex_shader_module = device
 			.create_shader_module(&vertex_shader_info, None)
-			.expect("Vertex shader module error");
+			.context("Vertex shader module error")?;
 
 		let fragment_shader_module = device
 			.create_shader_module(&frag_shader_info, None)
-			.expect("Fragment shader module error");
+			.context("Fragment shader module error")?;
 
 		let layout_create_info = vk::PipelineLayoutCreateInfo::default();
 
@@ -546,7 +484,7 @@ fn main() -> Result<()> {
 				location: 0,
 				binding: 0,
 				format: vk::Format::R32G32B32A32_SFLOAT,
-				offset: offset_of!(Vertex, pos) as u32,
+				offset: offset_of!(Vertex, position) as u32,
 			},
 			vk::VertexInputAttributeDescription {
 				location: 1,
@@ -701,27 +639,16 @@ fn main() -> Result<()> {
 					);
 					device.cmd_set_viewport(draw_command_buffer, 0, &viewports);
 					device.cmd_set_scissor(draw_command_buffer, 0, &scissors);
-					device.cmd_bind_vertex_buffers(
-						draw_command_buffer,
-						0,
-						&[vertex_input_buffer],
-						&[0],
-					);
-					device.cmd_bind_index_buffer(
-						draw_command_buffer,
-						index_buffer,
-						0,
-						vk::IndexType::UINT32,
-					);
-					device.cmd_draw_indexed(
-						draw_command_buffer,
-						index_buffer_data.len() as u32,
-						1,
-						0,
-						0,
-						1,
-					);
+
+					let draw_context = DrawContext {
+						command_buffer: draw_command_buffer,
+					};
+
+					model.draw(&hardware_context, &draw_context);
+
 					device.cmd_end_render_pass(draw_command_buffer);
+
+					Ok(())
 				},
 			)?;
 
