@@ -5,6 +5,18 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.71"
-ash = { git = "https://github.com/ash-rs/ash", version = "0.37.0" }
+nix = "0.26.2"
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
+vulkano = { git = "https://github.com/vulkano-rs/vulkano/"}
+vulkano-shaders = { git = "https://github.com/vulkano-rs/vulkano/"}
+
+[dependencies.smithay]
+git = "https://github.com/smithay/smithay"
+default-features = false
+features = [
+	"wayland_frontend",
+	"backend_session",
+	"backend_session_libseat",
+	"backend_libinput"
+]
